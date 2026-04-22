@@ -1,0 +1,17 @@
+# Test logs — contains production PII
+test_logs/
+
+# Generated output
+topology_output/
+rca_output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# SQLite tracker DBs
+*.db
+
+# macOS
+.DS_Store
