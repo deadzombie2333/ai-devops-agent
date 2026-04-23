@@ -398,9 +398,18 @@ class SystemConfig:
     topology_audit_log_path: str = "./topology_audit.jsonl"
     topology_output_dir: str = "./topology_output"
     rca_output_dir: str = "./rca_output"
-    high_resource_model: str = "claude-opus-4-6"      # top: planning, RCA master
-    mid_resource_model: str = "claude-sonnet-4-6"     # mid: analysis, topology inference
-    low_resource_model: str = "claude-haiku-4-5"      # bottom: file reading, extraction
+    high_resource_model: str = ""   # top: planning, RCA master
+    mid_resource_model: str = ""    # mid: analysis, topology inference
+    low_resource_model: str = ""    # bottom: file reading, extraction
+
+    def __post_init__(self):
+        import os
+        if not self.high_resource_model:
+            self.high_resource_model = os.environ.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-6")
+        if not self.mid_resource_model:
+            self.mid_resource_model = os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-6")
+        if not self.low_resource_model:
+            self.low_resource_model = os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5")
     max_concurrent_analyzers: int = 3
     log_batch_size: int = 10
     retention_days: int = 7
