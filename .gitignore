@@ -4,6 +4,7 @@ test_logs/
 # Generated output
 topology_output/
 rca_output/
+.analysis_cache/
 
 # Python
 __pycache__/
