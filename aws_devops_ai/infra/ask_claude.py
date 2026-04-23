@@ -21,6 +21,9 @@ import shutil
 import re
 import sys
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\[\?[0-9;]*[a-zA-Z]")
@@ -211,11 +214,12 @@ class ClaudeSession:
     concurrently without collision.
     """
 
-    def __init__(self, model=None, trust_all=True, timeout=120,
-                 credit_tracker=None, label=None):
+    def __init__(self, model=None, trust_all=True, timeout=0,
+                 credit_tracker=None, label=None, max_turns=0):
         self.model = _resolve_model(model)
         self.trust_all = trust_all
-        self.timeout = timeout
+        self.timeout = timeout  # 0 = no timeout
+        self.max_turns = max_turns  # 0 = no limit (omit --max-turns flag)
         self._cwd = None
         self._started = False
         self._session_id = str(uuid.uuid4())
@@ -271,8 +275,9 @@ class ClaudeSession:
             cmd.extend(["--resume", self._session_id])
         else:
             cmd.extend(["--session-id", self._session_id])
-        # Limit turns to 1 per call — we manage multi-turn ourselves
-        cmd.extend(["--max-turns", "1"])
+        # Limit turns per call — 0 means no limit (omit flag)
+        if self.max_turns > 0:
+            cmd.extend(["--max-turns", str(self.max_turns)])
         cmd.append(prompt)
         return cmd
 
@@ -304,8 +309,33 @@ class ClaudeSession:
             self.total_output_chars += len(clean)
             return clean
 
-        # Extract response text
+        # Extract response text — try multiple fields
         text = data.get("result", "")
+        if not text and "content" in data:
+            # Some CC versions put the result in content
+            content = data["content"]
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                # content blocks: [{"type": "text", "text": "..."}, ...]
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        parts.append(block)
+                text = "\n".join(parts)
+
+        if not text:
+            # Check if CC hit max_turns while still using tools
+            subtype = data.get("subtype", "")
+            stop_reason = data.get("stop_reason", "")
+            if subtype == "error_max_turns" and stop_reason == "tool_use":
+                logger.warning("CC hit max_turns while still using tools — result truncated")
+            else:
+                keys = list(data.keys())
+                logger.debug("CC JSON response has no result/content. Keys: %s, preview: %s",
+                             keys, clean[:200])
 
         # Extract usage stats from nested structure
         usage = data.get("usage", {})
@@ -384,7 +414,7 @@ class ClaudeSession:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=self.timeout,
+                timeout=self.timeout if self.timeout > 0 else None,
                 cwd=self._cwd,
                 env=env,
             )

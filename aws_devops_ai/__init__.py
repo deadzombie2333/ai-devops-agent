@@ -1,5 +1,6 @@
 # AWS DevOps AI - Multi-Agent Log Analysis and Resource Discovery
 from aws_devops_ai.models import (
+    AnalysisEvent, AnalysisEventType,
     ChangeSource, ChangeType, DownloadRecord, HealthStatus,
     HumanTopologyUpdate, InvestigationState, LogFinding,
     LogNotFoundError, LogReference, LogSource, LogSourceType,
@@ -19,6 +20,7 @@ from aws_devops_ai.tools.error_root_cause_tool import ErrorRootCauseTool
 from aws_devops_ai.cli import build_registry
 
 __all__ = [
+    "AnalysisEvent", "AnalysisEventType",
     "LogSourceType", "Severity", "ChangeType", "ChangeSource",
     "LogSource", "LogReference", "DownloadRecord", "LogFinding",
     "ResourceNode", "ResourceEdge", "ResourceMap",

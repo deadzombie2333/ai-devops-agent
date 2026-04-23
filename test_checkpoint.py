@@ -265,7 +265,7 @@ def test_topology_update_tool():
         modules = ModuleRegistry(config)
 
         # Monkey-patch analyzer to avoid real AI calls
-        modules.log_analyzer_agent.analyze = lambda paths: []
+        modules.log_analyzer_agent.analyze = lambda paths: ""
 
         tool = TopologyUpdateTool()
         result = tool.execute({"sources": config.sources}, modules)
@@ -342,6 +342,98 @@ def test_lambda_handler_parse():
     print("  lambda_handler_parse OK")
 
 
+def test_investigation_checkpoint():
+    """Test InvestigationState save/load round-trip."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from aws_devops_ai.models import InvestigationState, LogFinding, Severity
+
+        state = InvestigationState(
+            iteration=3,
+            max_iterations=6,
+            findings_so_far=[
+                LogFinding(
+                    source_file="test.log", timestamp=datetime.utcnow(),
+                    severity=Severity.ERROR, message="timeout on DB",
+                    resource_arns=["arn:aws:rds:us-east-1:123:db:prod"],
+                    line_numbers=[42, 43],
+                ),
+            ],
+            investigated_arns={"arn:aws:rds:us-east-1:123:db:prod"},
+            investigated_logs={"test.log", "access.csv"},
+            hypothesis="DB connection pool exhausted",
+            root_cause_chain=["arn:aws:rds:us-east-1:123:db:prod"],
+            error_pattern="timeout",
+            log_dir="/tmp/logs",
+        )
+
+        ckpt_path = os.path.join(tmpdir, "checkpoint.json")
+        state.save(ckpt_path)
+        assert os.path.exists(ckpt_path)
+
+        loaded = InvestigationState.load(ckpt_path)
+        assert loaded is not None
+        assert loaded.iteration == 3
+        assert loaded.hypothesis == "DB connection pool exhausted"
+        assert len(loaded.findings_so_far) == 1
+        assert loaded.findings_so_far[0].message == "timeout on DB"
+        assert "test.log" in loaded.investigated_logs
+        assert "access.csv" in loaded.investigated_logs
+        assert loaded.error_pattern == "timeout"
+
+        # Non-existent path returns None
+        assert InvestigationState.load(os.path.join(tmpdir, "nope.json")) is None
+
+        print("  investigation_checkpoint OK")
+
+
+def test_analysis_events():
+    """Test AnalysisEvent and AnalysisEventType."""
+    from aws_devops_ai.models import AnalysisEvent, AnalysisEventType
+
+    evt = AnalysisEvent(
+        event_type=AnalysisEventType.FINDINGS_DISCOVERED,
+        message="Found 3 errors",
+        data={"count": 3},
+    )
+    assert evt.event_type == AnalysisEventType.FINDINGS_DISCOVERED
+    assert evt.message == "Found 3 errors"
+    assert evt.data["count"] == 3
+    assert evt.timestamp is not None
+    print("  analysis_events OK")
+
+
+def test_investigation_context_writer():
+    """Test InvestigationContextWriter writes and appends correctly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from aws_devops_ai.infra.investigation_context import InvestigationContextWriter
+        from aws_devops_ai.models import TopologyMap, TopologyNode
+
+        topo = TopologyMap(
+            nodes={"arn:x": TopologyNode("arn:x", "lambda:function", "my-func")},
+            edges=[],
+        )
+
+        writer = InvestigationContextWriter(tmpdir)
+        path = writer.write_initial(
+            error_pattern="OOM killed",
+            available_logs=["app.log", "db.csv"],
+            topology=topo,
+        )
+        assert os.path.exists(path)
+        content = open(path).read()
+        assert "OOM killed" in content
+        assert "app.log" in content
+        assert "my-func" in content
+
+        # Append analysis text
+        writer.append_analysis("Found memory leak in connection pool", ["app.log"])
+        content2 = open(path).read()
+        assert "memory leak" in content2
+        assert len(content2) > len(content)
+
+        print("  investigation_context_writer OK")
+
+
 if __name__ == "__main__":
     print("Checkpoint tests:")
     test_models()
@@ -354,4 +446,7 @@ if __name__ == "__main__":
     test_cli_build_registry()
     test_package_exports()
     test_lambda_handler_parse()
+    test_investigation_checkpoint()
+    test_analysis_events()
+    test_investigation_context_writer()
     print("All checkpoint tests passed.")

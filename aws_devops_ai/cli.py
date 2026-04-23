@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-dir", default=None, help="Local log source directory (e.g. test_logs)")
     parser.add_argument("--target-arn", default=None, help="Target ARN for error investigation")
     parser.add_argument("--error-pattern", default=None, help="Error pattern to investigate")
+    parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint (error_root_cause only)")
     parser.add_argument("--params-json", default=None, help="Extra params as JSON string")
     parser.add_argument("--retention-days", type=int, default=7)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -72,6 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         params["target_arn"] = args.target_arn
     if args.error_pattern:
         params["error_pattern"] = args.error_pattern
+    if args.resume:
+        params["resume"] = True
 
     # Attach trigger context
     trigger = TriggerContext(trigger_type="manual")

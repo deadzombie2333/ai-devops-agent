@@ -398,8 +398,9 @@ class SystemConfig:
     topology_audit_log_path: str = "./topology_audit.jsonl"
     topology_output_dir: str = "./topology_output"
     rca_output_dir: str = "./rca_output"
-    high_resource_model: str = "claude-opus-4.6"
-    low_resource_model: str = "claude-sonnet-4.5"
+    high_resource_model: str = "claude-opus-4-6"      # top: planning, RCA master
+    mid_resource_model: str = "claude-sonnet-4-6"     # mid: analysis, topology inference
+    low_resource_model: str = "claude-haiku-4-5"      # bottom: file reading, extraction
     max_concurrent_analyzers: int = 3
     log_batch_size: int = 10
     retention_days: int = 7
@@ -496,3 +497,100 @@ class InvestigationState:
     hypothesis: str | None = None
     root_cause_chain: list[str] = field(default_factory=list)
     is_resolved: bool = False
+    # Checkpoint metadata
+    started_at: datetime = field(default_factory=datetime.utcnow)
+    last_checkpoint_at: datetime | None = None
+    error_pattern: str = ""
+    log_dir: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "iteration": self.iteration,
+            "max_iterations": self.max_iterations,
+            "findings_so_far": [f.to_dict() for f in self.findings_so_far],
+            "investigated_arns": sorted(self.investigated_arns),
+            "investigated_logs": sorted(self.investigated_logs),
+            "hypothesis": self.hypothesis,
+            "root_cause_chain": self.root_cause_chain,
+            "is_resolved": self.is_resolved,
+            "started_at": self.started_at.isoformat(),
+            "last_checkpoint_at": datetime.utcnow().isoformat(),
+            "error_pattern": self.error_pattern,
+            "log_dir": self.log_dir,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> InvestigationState:
+        findings = []
+        for fd in data.get("findings_so_far", []):
+            findings.append(LogFinding(
+                source_file=fd["source_file"],
+                timestamp=datetime.fromisoformat(fd["timestamp"]) if fd.get("timestamp") else datetime.utcnow(),
+                severity=Severity(fd["severity"]),
+                message=fd["message"],
+                resource_arns=fd.get("resource_arns", []),
+                raw_lines=fd.get("raw_lines", []),
+                line_numbers=fd.get("line_numbers", []),
+                context=fd.get("context", {}),
+            ))
+        return cls(
+            iteration=data.get("iteration", 0),
+            max_iterations=data.get("max_iterations", 10),
+            findings_so_far=findings,
+            investigated_arns=set(data.get("investigated_arns", [])),
+            investigated_logs=set(data.get("investigated_logs", [])),
+            hypothesis=data.get("hypothesis"),
+            root_cause_chain=data.get("root_cause_chain", []),
+            is_resolved=data.get("is_resolved", False),
+            started_at=datetime.fromisoformat(data["started_at"]) if data.get("started_at") else datetime.utcnow(),
+            last_checkpoint_at=datetime.fromisoformat(data["last_checkpoint_at"]) if data.get("last_checkpoint_at") else None,
+            error_pattern=data.get("error_pattern", ""),
+            log_dir=data.get("log_dir", ""),
+        )
+
+    def save(self, path: str) -> None:
+        """Save checkpoint to JSON file."""
+        import json
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(self.to_dict(), indent=2, default=str))
+
+    @classmethod
+    def load(cls, path: str) -> InvestigationState | None:
+        """Load checkpoint from JSON file. Returns None if not found."""
+        import json
+        p = Path(path)
+        if not p.exists():
+            return None
+        try:
+            return cls.from_dict(json.loads(p.read_text()))
+        except Exception:
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Analysis event stream
+# ---------------------------------------------------------------------------
+
+class AnalysisEventType(Enum):
+    """Event types emitted during analysis for real-time progress tracking."""
+    INVESTIGATION_STARTED = "investigation_started"
+    LOG_FILE_READING = "log_file_reading"
+    LOG_FILE_ANALYZED = "log_file_analyzed"
+    FINDINGS_DISCOVERED = "findings_discovered"
+    HYPOTHESIS_FORMED = "hypothesis_formed"
+    REQUESTING_LOGS = "requesting_logs"
+    ITERATION_COMPLETE = "iteration_complete"
+    CHECKPOINT_SAVED = "checkpoint_saved"
+    CONTEXT_FILE_WRITTEN = "context_file_written"
+    INVESTIGATION_COMPLETE = "investigation_complete"
+    ERROR = "error"
+
+
+@dataclass
+class AnalysisEvent:
+    """A single event emitted during analysis."""
+    event_type: AnalysisEventType
+    message: str
+    data: dict = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.utcnow)

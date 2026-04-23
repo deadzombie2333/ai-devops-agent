@@ -105,6 +105,10 @@ class MasterAgent:
             if "log_dir" not in params:
                 params["log_dir"] = self.config.log_dir
 
+            # Wire up event stream for real-time progress
+            from aws_devops_ai.models import AnalysisEvent
+            params["on_event"] = lambda evt: print(f"  {evt.message}")
+
             print(f"\n[Running {tool_name}...]")
             result = self.registry.invoke(tool_name, params)
 

@@ -1,129 +1,125 @@
-"""Log Analyzer Agent — low-resource AI module for log parsing and extraction."""
+"""Log Analyzer Agent — concurrent file analysis via Claude Code CLI.
+
+Each file gets its own CC session running in parallel (up to max_concurrent).
+max_turns is calculated dynamically based on file size.
+CC reads files directly using its own tools — no Python file I/O.
+"""
 
 from __future__ import annotations
 
-import json
 import logging
-import re
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-
-from aws_devops_ai.models import LogFinding, Severity
-from aws_devops_ai.infra.file_readers import read_file_content, is_supported_file
 
 logger = logging.getLogger(__name__)
 
-_ARN_RE = re.compile(r"arn:aws:[a-z0-9\-]+:[a-z0-9\-]*:\d*:[a-zA-Z0-9\-_/:.]+")
-
-_ANALYSIS_PROMPT = """Analyze the following log content and extract structured findings.
-Each line is prefixed with its line number (e.g. "L42: ...").
-
-For each notable event (errors, warnings, anomalies), return a JSON array of objects with:
-- "severity": one of "info", "warning", "error", "critical"
-- "message": concise description of the event
-- "resource_arns": list of AWS ARNs mentioned in the event
-- "timestamp": ISO timestamp if available, otherwise null
-- "line_numbers": list of line numbers (integers) where this event appears (e.g. [42, 43, 44])
-- "raw_lines": the exact relevant log lines (copy them verbatim)
-
-Return ONLY a JSON array, no other text.
-
-Log content:
-{log_content}"""
+# Size thresholds
+_MAX_FILE_SIZE = 50_000_000    # 50MB — skip files larger than this
 
 
 class LogAnalyzerAgent:
-    """Reads and analyzes log files using AI (KiroSession) to extract findings."""
+    """Analyzes log files concurrently by letting Claude Code CLI read them directly."""
 
-    def __init__(self, model: str = "claude-sonnet-4.5", credit_tracker=None) -> None:
+    def __init__(self, model: str = "claude-sonnet-4.5", credit_tracker=None,
+                 max_concurrent: int = 3) -> None:
         self.model = model
         self.credit_tracker = credit_tracker
+        self.max_concurrent = max_concurrent
 
-    def analyze(self, log_paths: list[Path]) -> list[LogFinding]:
-        """Analyze log files and return structured findings."""
-        from aws_devops_ai.infra.ask_kiro import KiroSession, AuthExpiredError
+    def analyze(self, log_paths: list[Path]) -> str:
+        """Analyze log files concurrently. Returns combined text analysis."""
+        if not log_paths:
+            return ""
 
-        all_findings: list[LogFinding] = []
-        input_files = {str(p) for p in log_paths}
-
-        for log_path in log_paths:
-            if not log_path.exists():
-                logger.warning("Log file not found: %s", log_path)
-                continue
-
-            content = read_file_content(log_path)
-            if not content.strip():
-                continue
-
-            # Prefix each line with its line number for traceability
-            numbered_lines = []
-            for i, line in enumerate(content.splitlines(), 1):
-                numbered_lines.append(f"L{i}: {line}")
-            numbered_content = "\n".join(numbered_lines)
-
-            session = KiroSession(model=self.model, credit_tracker=self.credit_tracker, label=f"log-analyzer:{log_path.name}")
-            try:
-                prompt = _ANALYSIS_PROMPT.format(log_content=numbered_content[:50000])  # cap at 50k chars
-                response = session.start(prompt)
-                findings = self._parse_response(response, str(log_path))
-
-                # Validate source_file is in input set
-                for f in findings:
-                    if f.source_file in input_files:
-                        all_findings.append(f)
-                    else:
-                        logger.warning("Finding source_file %s not in input set, skipping", f.source_file)
-
-            except AuthExpiredError:
-                logger.error("Auth expired during analysis of %s", log_path)
-                raise
-            except Exception as e:
-                logger.warning("Failed to analyze %s: %s", log_path, e)
-            finally:
-                session.end()
-
-        return all_findings
-
-    def extract_resources(self, log_content: str) -> list[str]:
-        """Extract AWS ARNs from log content."""
-        return list(set(_ARN_RE.findall(log_content)))
-
-    def _parse_response(self, response: str, source_file: str) -> list[LogFinding]:
-        """Parse AI response into LogFinding objects."""
-        # Try to extract JSON array from response
-        try:
-            # Find JSON array in response
-            start = response.find("[")
-            end = response.rfind("]") + 1
-            if start >= 0 and end > start:
-                data = json.loads(response[start:end])
+        # Filter out oversized files
+        valid_paths = []
+        for p in log_paths:
+            size = p.stat().st_size
+            if size > _MAX_FILE_SIZE:
+                logger.warning("Skipping %s (%s) — too large", p.name, _human_size(p))
+            elif size == 0:
+                logger.debug("Skipping empty file: %s", p.name)
             else:
-                logger.warning("No JSON array found in response")
-                return []
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse JSON from AI response")
-            return []
+                valid_paths.append(p)
 
-        findings = []
-        for item in data:
-            try:
-                severity_str = item.get("severity", "info").lower()
-                severity = Severity(severity_str) if severity_str in [s.value for s in Severity] else Severity.INFO
+        if not valid_paths:
+            return ""
 
-                ts_str = item.get("timestamp")
-                timestamp = datetime.fromisoformat(ts_str) if ts_str else datetime.utcnow()
+        logger.info("Analyzing %d files with %d concurrent workers",
+                     len(valid_paths), min(self.max_concurrent, len(valid_paths)))
 
-                findings.append(LogFinding(
-                    source_file=source_file,
-                    timestamp=timestamp,
-                    severity=severity,
-                    message=item.get("message", ""),
-                    resource_arns=item.get("resource_arns", []),
-                    raw_lines=item.get("raw_lines", []),
-                    line_numbers=[int(n) for n in item.get("line_numbers", []) if str(n).isdigit()],
-                ))
-            except Exception as e:
-                logger.warning("Failed to parse finding: %s", e)
-                continue
+        # Run all files concurrently
+        results: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=self.max_concurrent) as pool:
+            futures = {
+                pool.submit(self._analyze_single, p): p
+                for p in valid_paths
+            }
+            for future in as_completed(futures):
+                path = futures[future]
+                try:
+                    text = future.result()
+                    if text.strip():
+                        results[str(path)] = text.strip()
+                        logger.info("✓ %s: %d chars", path.name, len(text))
+                    else:
+                        logger.warning("✗ %s: empty response", path.name)
+                except Exception as e:
+                    logger.warning("✗ %s: %s", path.name, e)
 
-        return findings
+        if not results:
+            return ""
+
+        # Combine results in original file order
+        parts = []
+        for p in valid_paths:
+            key = str(p)
+            if key in results:
+                parts.append(f"=== {p.name} ===\n{results[key]}")
+
+        return "\n\n---\n\n".join(parts)
+
+    def _analyze_single(self, path: Path) -> str:
+        """Analyze a single file in its own CC session."""
+        from aws_devops_ai.infra.ask_claude import ClaudeSession, AuthExpiredError
+
+        abs_path = str(path.resolve())
+
+        prompt = f"""Read and analyze this log file:
+
+FILE: {path.name} ({_human_size(path)})
+PATH: {abs_path}
+
+Read the file and report:
+- File format and structure
+- Key findings: errors, warnings, anomalies, security issues, performance problems
+- Resource identifiers: ARNs, hostnames, IPs, service names, database names, server names
+- Timestamps of notable events
+- For large files, focus on patterns and significant entries — don't list every row
+
+Be thorough but concise."""
+
+        session = ClaudeSession(
+            model=self.model,
+            credit_tracker=self.credit_tracker,
+            label=f"analyzer:{path.name}",
+        )
+        try:
+            response = session.start(prompt)
+            return response
+        except AuthExpiredError:
+            raise
+        except Exception as e:
+            logger.warning("Failed to analyze %s: %s", path.name, e)
+            return ""
+        finally:
+            session.end()
+
+
+def _human_size(path: Path) -> str:
+    size = path.stat().st_size
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TB"

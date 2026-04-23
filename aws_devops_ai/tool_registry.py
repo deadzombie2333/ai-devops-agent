@@ -55,7 +55,11 @@ class ModuleRegistry:
             topology_path=config.topology_path,
             audit_log_path=config.topology_audit_log_path,
         )
-        self.log_analyzer_agent = LogAnalyzerAgent(model=config.low_resource_model, credit_tracker=self.credit_tracker)
+        self.log_analyzer_agent = LogAnalyzerAgent(
+            model=config.low_resource_model,
+            credit_tracker=self.credit_tracker,
+            max_concurrent=config.max_concurrent_analyzers,
+        )
 
 
 class ToolRegistry:

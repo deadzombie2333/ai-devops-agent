@@ -109,9 +109,41 @@ class LogManager:
         return []
 
     def _enumerate_s3(self, source: LogSource) -> list[LogReference]:
-        """Enumerate S3 objects — placeholder for AWS integration."""
-        logger.info("S3 enumeration for %s — not yet implemented", source.identifier)
-        return []
+        """Enumerate S3 objects matching supported extensions."""
+        import boto3
+
+        bucket, prefix = self._parse_s3_identifier(source.identifier, source.prefix)
+        s3 = self.aws_session.client("s3") if self.aws_session else boto3.client("s3")
+
+        refs = []
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                ext = Path(key).suffix.lower()
+                if ext not in SUPPORTED_EXTENSIONS:
+                    continue
+                if Path(key).name.startswith("."):
+                    continue
+                refs.append(LogReference(
+                    source=source,
+                    key=key,
+                    timestamp=obj.get("LastModified", datetime.utcnow()),
+                    size_bytes=obj.get("Size", 0),
+                ))
+        logger.info("S3 enumeration for s3://%s/%s: found %d files", bucket, prefix, len(refs))
+        return refs
+
+    @staticmethod
+    def _parse_s3_identifier(identifier: str, prefix: str | None = None) -> tuple[str, str]:
+        """Parse 's3://bucket/prefix' or plain 'bucket' into (bucket, prefix)."""
+        ident = identifier.removeprefix("s3://")
+        if "/" in ident:
+            bucket, s3_prefix = ident.split("/", 1)
+        else:
+            bucket = ident
+            s3_prefix = prefix or ""
+        return bucket, s3_prefix
 
     # ------------------------------------------------------------------
     # Download
@@ -165,8 +197,17 @@ class LogManager:
         raise RuntimeError("Unreachable")  # pragma: no cover
 
     def _download_from_aws(self, ref: LogReference, dest: Path) -> Path:
-        """Download from an AWS source — placeholder."""
-        raise NotImplementedError(f"AWS download not yet implemented for {ref.source.source_type.value}")
+        """Download a file from S3."""
+        import boto3
+
+        if ref.source.source_type != LogSourceType.S3_BUCKET:
+            raise NotImplementedError(f"AWS download not yet implemented for {ref.source.source_type.value}")
+
+        bucket, _ = self._parse_s3_identifier(ref.source.identifier, ref.source.prefix)
+        s3 = self.aws_session.client("s3") if self.aws_session else boto3.client("s3")
+        s3.download_file(bucket, ref.key, str(dest))
+        logger.info("Downloaded s3://%s/%s → %s", bucket, ref.key, dest)
+        return dest
 
     # ------------------------------------------------------------------
     # Listing
