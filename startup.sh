@@ -15,7 +15,7 @@ fi
 # Install Claude Code CLI
 if ! command -v claude &> /dev/null; then
     echo "Installing Claude Code CLI..."
-    npm install -g @anthropic-ai/claude-code
+    sudo npm install -g @anthropic-ai/claude-code
 fi
 
 # Python venv setup
