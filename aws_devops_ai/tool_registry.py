@@ -9,7 +9,7 @@ from typing import Any
 from aws_devops_ai.infra.download_tracker import DownloadTracker
 from aws_devops_ai.agents.log_analyzer_agent import LogAnalyzerAgent
 from aws_devops_ai.infra.log_manager import LogManager
-from aws_devops_ai.infra.ask_kiro import CreditTracker
+from aws_devops_ai.infra.ask_claude import CreditTracker
 from aws_devops_ai.models import SystemConfig, ToolResult
 from aws_devops_ai.infra.resource_discoverer import ResourceDiscoverer
 from aws_devops_ai.infra.topology_manager import TopologyManager

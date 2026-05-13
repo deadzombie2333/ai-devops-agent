@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from aws_devops_ai.infra.ask_kiro import KiroSession
+from aws_devops_ai.infra.ask_claude import ClaudeSession as KiroSession
 from aws_devops_ai.models import SystemConfig
 from aws_devops_ai.cli import build_registry
 
